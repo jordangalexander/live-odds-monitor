@@ -28,9 +28,9 @@ from src.live_odds_monitor import Game, OddsAPIClient, Storage
 from src.live_odds_monitor.config import MonitorConfig
 
 # Snapshot types
-SNAPSHOT_OPENING = "opening"      # 12h before game
-SNAPSHOT_PREGAME = "pregame"      # At game start
-SNAPSHOT_MIDGAME = "midgame"      # ~1h after start (halftime-ish)
+SNAPSHOT_OPENING = "opening"  # 12h before game
+SNAPSHOT_PREGAME = "pregame"  # At game start
+SNAPSHOT_MIDGAME = "midgame"  # ~1h after start (halftime-ish)
 
 # Strategy thresholds to test
 THRESHOLDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
@@ -250,23 +250,24 @@ def simulate_bets_for_game(
         if pct_change >= threshold:
             strategy = f"spread_change_{int(threshold * 100)}pct"
 
-            # Bet the midgame line (current line when alert would fire)
-            # If spread widened, bet the team getting more points
+            # FADE strategy: bet AGAINST the line movement
+            # If spread widened (more points to underdog), fade by betting the FAVORITE
+            # If spread narrowed (fewer points to underdog), fade by betting the UNDERDOG
             if abs(mid_home) > abs(open_home):
-                # Spread widened - bet the underdog (getting more points)
+                # Spread widened - FADE by betting the favorite
                 if mid_home > 0:
-                    bet_team = home_team
-                    bet_spread = mid_home
+                    bet_team = away_team  # Away is favorite
+                    bet_spread = -mid_home
                 else:
-                    bet_team = away_team
-                    bet_spread = -mid_home  # Convert to positive
+                    bet_team = home_team  # Home is favorite
+                    bet_spread = mid_home
             else:
-                # Spread narrowed - bet the favorite (giving fewer points)
-                if mid_home < 0:
-                    bet_team = home_team
+                # Spread narrowed - FADE by betting the underdog
+                if mid_home > 0:
+                    bet_team = home_team  # Home is underdog
                     bet_spread = mid_home
                 else:
-                    bet_team = away_team
+                    bet_team = away_team  # Away is underdog
                     bet_spread = -mid_home
 
             # Determine if bet covered
@@ -299,12 +300,14 @@ def simulate_bets_for_game(
                 profit=profit,
             )
 
-            bets_created.append({
-                "strategy": strategy,
-                "team": bet_team,
-                "spread": bet_spread,
-                "covered": covered,
-            })
+            bets_created.append(
+                {
+                    "strategy": strategy,
+                    "team": bet_team,
+                    "spread": bet_spread,
+                    "covered": covered,
+                }
+            )
 
     return bets_created
 
@@ -352,8 +355,7 @@ def print_strategy_analysis(storage: Storage, sport: str = None):
     print("STRATEGY PERFORMANCE ANALYSIS")
     print("=" * 70)
 
-    print(f"\n{'Strategy':<25} {'Bets':<6} {'Wins':<6} {'Win%':<8} "
-          f"{'Profit':<10} {'ROI':<8}")
+    print(f"\n{'Strategy':<25} {'Bets':<6} {'Wins':<6} {'Win%':<8} {'Profit':<10} {'ROI':<8}")
     print("-" * 70)
 
     for threshold in THRESHOLDS:
@@ -365,18 +367,16 @@ def print_strategy_analysis(storage: Storage, sport: str = None):
                 f"{strategy:<25} "
                 f"{stats['total_bets']:<6} "
                 f"{stats['wins']:<6} "
-                f"{stats['win_rate']*100:<7.1f}% "
+                f"{stats['win_rate'] * 100:<7.1f}% "
                 f"${stats['total_profit']:<9.0f} "
-                f"{stats['roi']*100:<7.1f}%"
+                f"{stats['roi'] * 100:<7.1f}%"
             )
         else:
             print(f"{strategy:<25} {'0':<6} {'-':<6} {'-':<8} {'-':<10} {'-':<8}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Backfill historical data for strategy analysis"
-    )
+    parser = argparse.ArgumentParser(description="Backfill historical data for strategy analysis")
     parser.add_argument(
         "--days",
         type=int,
@@ -441,15 +441,15 @@ def main():
             if sport == "basketball_ncaab" and not args.all_teams:
                 original_count = len(games)
                 games = [
-                    g for g in games
+                    g
+                    for g in games
                     if config.is_team_watched(g["home_team"])
                     or config.is_team_watched(g["away_team"])
                 ]
-                print(f"  Filtered to {len(games)} watchlist games "
-                      f"(from {original_count})")
+                print(f"  Filtered to {len(games)} watchlist games (from {original_count})")
 
             if args.max_games:
-                games = games[:args.max_games]
+                games = games[: args.max_games]
                 print(f"  (Limited to {args.max_games} for testing)")
 
             processed = 0

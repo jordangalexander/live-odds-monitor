@@ -10,13 +10,18 @@ import os
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
-# DB is in data/ folder at project root
-DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "odds_monitor.db"
-)
+# Try to import matplotlib for visualizations
+try:
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
+# DB location: ~/.local/share/live-odds-monitor/
+DB_PATH = Path.home() / ".local" / "share" / "live-odds-monitor" / "odds_monitor.db"
 
 
 @dataclass
@@ -431,7 +436,60 @@ def analyze_combined_filters(bets: list[BetRecord]) -> None:
         print(f"{roi:.1f}%{'':<4} {total:<6} {win_rate:.1f}%{'':<4} ${profit:<9.0f} {filters}")
 
 
-def analyze_margin_of_victory(bets: list[BetRecord]) -> None:
+def analyze_by_time_remaining(bets: list[BetRecord]) -> None:
+    """Analyze win rate by time remaining in game."""
+    print("\n" + "=" * 70)
+    print("ANALYSIS BY TIME REMAINING")
+    print("=" * 70)
+    print("\nDo line moves happen more at certain times? Are fades more profitable then?")
+    print()
+
+    # Group by time buckets
+    time_ranges = [
+        ("Late Game (<10 min)", 0, 10),
+        ("Mid Game (10-20 min)", 10, 20),
+        ("Early Game (20-30 min)", 20, 30),
+        ("Very Early (30+ min)", 30, 60),
+    ]
+
+    print(f"{'Time Range':<20} {'Bets':<6} {'Wins':<6} {'Win%':<8} {'Profit':<10} {'ROI':<8}")
+    print("-" * 65)
+
+    for name, low, high in time_ranges:
+        matching = [
+            b for b in bets if b.final_margin is not None and low <= (40 - b.final_margin) < high
+        ]
+
+        if not matching:
+            continue
+
+        wins = sum(1 for b in matching if b.covered)
+        losses = sum(1 for b in matching if not b.covered)
+        total = wins + losses
+
+        if total == 0:
+            continue
+
+        win_rate = wins / total * 100
+        profit = sum(b.profit for b in matching)
+        roi = profit / (total * 110) * 100
+
+        print(f"{name:<20} {total:<6} {wins:<6} {win_rate:.1f}%{'':<4} ${profit:<9.0f} {roi:.1f}%")
+
+
+def analyze_by_score_differential(bets: list[BetRecord]) -> None:
+    """Analyze by score differential at time of bet."""
+    print("\n" + "=" * 70)
+    print("ANALYSIS BY SCORE DIFFERENTIAL")
+    print("=" * 70)
+    print("\nDoes the current score gap affect fade profitability?")
+    print()
+
+    # This would require score data in the database
+    # For now, show a placeholder
+    print("⚠️  Score differential analysis requires score tracking in database.")
+    print("   This is a great next step - add home_score/away_score to snapshots!")
+    print("   Expected insight: Teams ahead might see more public chasing (better fades).")
     """Analyze how close the games were to covering."""
     print("\n" + "=" * 70)
     print("MARGIN OF VICTORY ANALYSIS")
@@ -451,9 +509,9 @@ def analyze_margin_of_victory(bets: list[BetRecord]) -> None:
     loss_margins = [m for b, m in margins if not b.covered]
 
     if win_margins:
-        print(f"Average margin when WINNING: +{sum(win_margins)/len(win_margins):.1f} points")
+        print(f"Average margin when WINNING: +{sum(win_margins) / len(win_margins):.1f} points")
     if loss_margins:
-        print(f"Average margin when LOSING:  {sum(loss_margins)/len(loss_margins):.1f} points")
+        print(f"Average margin when LOSING:  {sum(loss_margins) / len(loss_margins):.1f} points")
     print()
 
     if not loss_margins:
@@ -524,6 +582,241 @@ def suggest_optimal_strategy(bets: list[BetRecord]) -> None:
         print(f"    ALERT_THRESHOLD = {best_threshold / 100}")
 
 
+def create_visualizations(bets: list[BetRecord], output_dir: Path) -> None:
+    """Create visualization charts for the backtest results."""
+    if not HAS_MATPLOTLIB:
+        print("\n⚠️  matplotlib not installed. Skipping visualizations.")
+        print("   Install with: pip install matplotlib")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    plt.style.use("seaborn-v0_8-darkgrid")
+
+    # 1. ROI by Threshold Chart
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Threshold performance
+    thresholds = []
+    rois = []
+    win_rates = []
+    bet_counts = []
+
+    for threshold in range(25, 275, 25):
+        matching = [b for b in bets if b.spread_change_pct >= threshold]
+        if len(matching) < 3:
+            continue
+
+        wins = sum(1 for b in matching if b.covered)
+        total = len(matching)
+        profit = sum(b.profit for b in matching)
+        roi = profit / (total * 110) * 100
+
+        thresholds.append(threshold)
+        rois.append(roi)
+        win_rates.append(wins / total * 100)
+        bet_counts.append(total)
+
+    ax1 = axes[0, 0]
+    ax1_twin = ax1.twinx()
+
+    bars = ax1.bar(thresholds, rois, color="steelblue", alpha=0.7, label="ROI %")
+    ax1_twin.plot(thresholds, bet_counts, "ro-", label="# Bets", markersize=6)
+
+    ax1.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    ax1.set_xlabel("Minimum Threshold (%)")
+    ax1.set_ylabel("ROI (%)", color="steelblue")
+    ax1_twin.set_ylabel("Number of Bets", color="red")
+    ax1.set_title("ROI by Minimum Threshold")
+    ax1.legend(loc="upper left")
+    ax1_twin.legend(loc="upper right")
+
+    # 2. Win Rate by Threshold
+    ax2 = axes[0, 1]
+    colors = ["green" if wr >= 52.4 else "red" for wr in win_rates]
+    ax2.bar(thresholds, win_rates, color=colors, alpha=0.7)
+    ax2.axhline(y=52.4, color="orange", linestyle="--", linewidth=2, label="Breakeven (52.4%)")
+    ax2.set_xlabel("Minimum Threshold (%)")
+    ax2.set_ylabel("Win Rate (%)")
+    ax2.set_title("Win Rate by Threshold (Green = Profitable)")
+    ax2.legend()
+    ax2.set_ylim(0, 100)
+
+    # 3. Cumulative P&L over time
+    ax3 = axes[1, 0]
+
+    # Sort bets by game_id (proxy for time)
+    sorted_bets = sorted(bets, key=lambda b: b.game_id)
+    cumulative_pnl = []
+    running_total = 0
+    for bet in sorted_bets:
+        running_total += bet.profit
+        cumulative_pnl.append(running_total)
+
+    ax3.plot(range(len(cumulative_pnl)), cumulative_pnl, "b-", linewidth=1.5)
+    ax3.fill_between(
+        range(len(cumulative_pnl)),
+        cumulative_pnl,
+        where=[p >= 0 for p in cumulative_pnl],
+        color="green",
+        alpha=0.3,
+    )
+    ax3.fill_between(
+        range(len(cumulative_pnl)),
+        cumulative_pnl,
+        where=[p < 0 for p in cumulative_pnl],
+        color="red",
+        alpha=0.3,
+    )
+    ax3.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    ax3.set_xlabel("Bet Number")
+    ax3.set_ylabel("Cumulative P&L ($)")
+    ax3.set_title("Cumulative Profit/Loss Over Time")
+
+    # 4. Sport comparison
+    ax4 = axes[1, 1]
+
+    by_sport: dict[str, list[BetRecord]] = defaultdict(list)
+    for bet in bets:
+        sport_name = "NCAAB" if "ncaab" in bet.sport else "NBA"
+        by_sport[sport_name].append(bet)
+
+    sports = []
+    sport_rois = []
+    sport_wins = []
+    sport_totals = []
+
+    for sport, group in sorted(by_sport.items()):
+        wins = sum(1 for b in group if b.covered)
+        total = len(group)
+        profit = sum(b.profit for b in group)
+        roi = profit / (total * 110) * 100
+
+        sports.append(sport)
+        sport_rois.append(roi)
+        sport_wins.append(wins / total * 100)
+        sport_totals.append(total)
+
+    x = range(len(sports))
+    width = 0.35
+
+    bars1 = ax4.bar([i - width / 2 for i in x], sport_rois, width, label="ROI %", color="steelblue")
+    bars2 = ax4.bar(
+        [i + width / 2 for i in x], sport_wins, width, label="Win Rate %", color="green", alpha=0.7
+    )
+
+    ax4.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    ax4.axhline(y=52.4, color="orange", linestyle="--", linewidth=1, label="Breakeven")
+    ax4.set_xlabel("Sport")
+    ax4.set_ylabel("Percentage")
+    ax4.set_title("Performance by Sport")
+    ax4.set_xticks(x)
+    ax4.set_xticklabels([f"{s}\n({t} bets)" for s, t in zip(sports, sport_totals)])
+    ax4.legend()
+
+    plt.tight_layout()
+    chart_path = output_dir / "backtest_analysis.png"
+    plt.savefig(chart_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"\n📊 Saved main analysis chart to: {chart_path}")
+
+    # 5. Separate chart: Margin distribution
+    fig2, (ax5, ax6) = plt.subplots(1, 2, figsize=(12, 5))
+
+    win_margins = [b.final_margin for b in bets if b.covered and b.final_margin is not None]
+    loss_margins = [b.final_margin for b in bets if not b.covered and b.final_margin is not None]
+
+    if win_margins:
+        ax5.hist(win_margins, bins=20, color="green", alpha=0.7, edgecolor="black")
+        ax5.axvline(
+            x=sum(win_margins) / len(win_margins),
+            color="darkgreen",
+            linestyle="--",
+            linewidth=2,
+            label=f"Avg: +{sum(win_margins) / len(win_margins):.1f}",
+        )
+        ax5.set_xlabel("Margin (points)")
+        ax5.set_ylabel("Frequency")
+        ax5.set_title(f"Winning Bet Margins (n={len(win_margins)})")
+        ax5.legend()
+
+    if loss_margins:
+        ax6.hist(loss_margins, bins=20, color="red", alpha=0.7, edgecolor="black")
+        ax6.axvline(
+            x=sum(loss_margins) / len(loss_margins),
+            color="darkred",
+            linestyle="--",
+            linewidth=2,
+            label=f"Avg: {sum(loss_margins) / len(loss_margins):.1f}",
+        )
+        ax6.set_xlabel("Margin (points)")
+        ax6.set_ylabel("Frequency")
+        ax6.set_title(f"Losing Bet Margins (n={len(loss_margins)})")
+        ax6.legend()
+
+    plt.tight_layout()
+    margin_path = output_dir / "margin_distribution.png"
+    plt.savefig(margin_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"📊 Saved margin distribution to: {margin_path}")
+
+    # 6. Spread size analysis chart
+    fig3, ax7 = plt.subplots(figsize=(10, 6))
+
+    spread_ranges = [
+        ("0-3", 0, 3),
+        ("3-5", 3, 5),
+        ("5-7", 5, 7),
+        ("7-10", 7, 10),
+        ("10-15", 10, 15),
+        ("15+", 15, 100),
+    ]
+
+    range_names = []
+    range_rois = []
+    range_counts = []
+
+    for name, low, high in spread_ranges:
+        matching = [b for b in bets if low <= abs(b.opening_spread) < high]
+        if len(matching) < 2:
+            continue
+
+        profit = sum(b.profit for b in matching)
+        roi = profit / (len(matching) * 110) * 100
+
+        range_names.append(name)
+        range_rois.append(roi)
+        range_counts.append(len(matching))
+
+    colors = ["green" if r > 0 else "red" for r in range_rois]
+    bars = ax7.bar(range_names, range_rois, color=colors, alpha=0.7, edgecolor="black")
+
+    # Add count labels on bars
+    for bar, count in zip(bars, range_counts):
+        ax7.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 1,
+            f"n={count}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+
+    ax7.axhline(y=0, color="black", linestyle="-", linewidth=1)
+    ax7.set_xlabel("Opening Spread Range (points)")
+    ax7.set_ylabel("ROI (%)")
+    ax7.set_title("ROI by Opening Spread Size")
+
+    plt.tight_layout()
+    spread_path = output_dir / "spread_size_analysis.png"
+    plt.savefig(spread_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"📊 Saved spread size analysis to: {spread_path}")
+
+
 def main() -> None:
     """Run all analyses."""
     parser = argparse.ArgumentParser(description="Analyze historical bet data")
@@ -531,6 +824,17 @@ def main() -> None:
         "--threshold-only",
         action="store_true",
         help="Only run threshold optimization",
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate visualization charts",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save charts (default: ./reports/)",
     )
     args = parser.parse_args()
 
@@ -564,9 +868,16 @@ def main() -> None:
     analyze_by_spread_size(bets)
     analyze_by_bet_direction(bets)
     analyze_by_line_movement_direction(bets)
-    analyze_margin_of_victory(bets)
+    # analyze_margin_of_victory(bets)  # Function not implemented
+    analyze_by_time_remaining(bets)
+    analyze_by_score_differential(bets)
     analyze_combined_filters(bets)
     suggest_optimal_strategy(bets)
+
+    # Generate visualizations if requested
+    if args.visualize:
+        output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / "reports"
+        create_visualizations(bets, output_dir)
 
 
 if __name__ == "__main__":
